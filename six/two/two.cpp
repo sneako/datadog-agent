@@ -737,7 +737,7 @@ char *Two::getIntegrationList()
         goto done;
     }
 
-    wheels = as_json(packages);
+    wheels = as_yaml(packages);
 
 done:
     Py_XDECREF(pyPackages);
