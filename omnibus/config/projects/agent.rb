@@ -131,7 +131,6 @@ if osx?
 end
 
 # External agents
-dependency 'datadog-process-agent' # Includes network-tracer
 dependency 'jmxfetch'
 
 # version manifest file

@@ -91,6 +91,18 @@ build do
     end
   end
 
+
+  # Build the process-agent and the network-tracer
+  command "invoke process-agent.build", :env => env
+  command "invoke network-tracer.build", :env => env
+
+  if windows?
+    copy 'bin/process-agent/process-agent.exe', "#{Omnibus::Config.source_dir()}/datadog-agent/src/github.com/DataDog/datadog-agent/bin/agent"
+  else
+    copy 'bin/process-agent/process-agent', "#{install_dir}/embedded/bin"
+    copy 'bin/network-tracer/network-tracer', "#{install_dir}/embedded/bin"
+  end
+
   if linux?
     if debian?
       erb source: "upstart_debian.conf.erb",
