@@ -66,7 +66,7 @@ func (c *Scheduler) AddCollector(name string, interval time.Duration) error {
 
 	sendTicker := time.NewTicker(interval)
 	health := health.Register("metadata-" + name)
-	stopChan := make(chan struct{}, 1)
+	stopChan := make(chan struct{})
 
 	go func() {
 		for {
