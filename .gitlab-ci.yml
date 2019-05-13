@@ -37,6 +37,7 @@ variables:
   DOGSTATSD_BINARIES_DIR: bin/dogstatsd
   AGENT_BINARIES_DIR: bin/agent
   CLUSTER_AGENT_BINARIES_DIR: bin/datadog-cluster-agent
+  NETWORK_TRACER_BINARIES_DIR: bin/network-tracer
   DEB_S3_BUCKET: apt.datad0g.com
   RPM_S3_BUCKET: yum.datad0g.com
   WIN_S3_BUCKET: dd-agent-mstesting
@@ -242,6 +243,33 @@ cluster_agent-build:
     - $S3_CP_CMD $SRC_PATH/Dockerfiles/cluster-agent/datadog-cluster.yaml $S3_ARTEFACTS_URI/datadog-cluster.yaml
     - $S3_CP_CMD --recursive $SRC_PATH/$CLUSTER_AGENT_BINARIES_DIR/dist/templates $S3_ARTEFACTS_URI/dist/templates
 
+# build network-tracer bin
+network_tracer-build:
+  stage: binary_build
+  # TODO change image
+  image: golang:1.11.5
+  # TODO removeme
+  before_script:
+    - cd $SRC_PATH
+  tags: [ "runner:main", "size:large" ]
+  script:
+    # TODO changeme once the builder image is avaialble in the registry remove those
+    - apt-get update
+    - apt-get install -y linux-headers-4.9.0-9-all git python3-pip python-pip
+    - pip3 install invoke==1.0 pyyaml==5.1
+    - wget -O - https://apt.llvm.org/llvm-snapshot.gpg.key | apt-key add -
+    - echo "deb http://apt.llvm.org/stretch/ llvm-toolchain-stretch-8 main" >> /etc/apt/sources.list
+    - echo "deb-src http://apt.llvm.org/stretch/ llvm-toolchain-stretch-8 main" >> /etc/apt/sources.list
+    - apt-get update
+    - apt-get install -y clang-8 llvm-8
+    - ln -sf /usr/bin/clang-8 /usr/bin/clang
+    - ln -sf /usr/bin/llc-8 /usr/bin/llc
+    - inv -e deps
+    - pip install awscli==1.11.152
+    # END
+    - inv -e network-tracer.build
+    - $S3_CP_CMD $SRC_PATH/$NETWORK_TRACER_BINARIES_DIR/network-tracer $S3_ARTEFACTS_URI/network-tracer
+
 #
 # integration_test
 
@@ -296,6 +324,8 @@ agent_deb-x64:
   script:
     # remove artifacts from previous pipelines that may come from the cache
     - rm -rf $OMNIBUS_PACKAGE_DIR/*
+    # Retrieve the network-tracer from S3
+    - $S3_CP_CMD $S3_ARTEFACTS_URI/network-tracer $SRC_PATH/$NETWORK_TRACER_BINARIES_DIR/network-tracer
     # Artifacts and cache must live within project directory but we run omnibus in a neutral directory.
     # Thus, we move the artifacts at the end in a gitlab-friendly dir.
     - inv -e agent.omnibus-build --release-version "$RELEASE_VERSION" --base-dir $OMNIBUS_BASE_DIR --omnibus-s3-cache

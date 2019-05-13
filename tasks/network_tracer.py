@@ -19,14 +19,12 @@ EBPF_BUILDER_FILE = os.path.join(".", "Dockerfiles", "network-tracer", "Dockerfi
 
 BPF_TAG = "linux_bpf"
 
+
 @task
-def build(ctx, race=False, rebuild_ebpf_builder=False, incremental_build=False, puppy=False):
+def build(ctx, race=False, incremental_build=False):
     """
     Build the network_tracer
     """
-
-    if rebuild_ebpf_builder:
-        build_ebpf_builder(ctx)
 
     build_object_files(ctx)
 
@@ -44,7 +42,7 @@ def build(ctx, race=False, rebuild_ebpf_builder=False, incremental_build=False, 
 
     # Add custom ld flags
     ldflags += ' '.join(["-X '{name}={value}'".format(name=main+key, value=value) for key, value in ld_vars.items()])
-    build_tags = get_default_build_tags(puppy=puppy) + [BPF_TAG]
+    build_tags = get_default_build_tags() + [BPF_TAG]
 
     # TODO static option
     cmd = 'go build {race_opt} {build_type} -tags "{go_build_tags}" '
@@ -64,10 +62,43 @@ def build(ctx, race=False, rebuild_ebpf_builder=False, incremental_build=False, 
 
 
 @task
-def test(ctx):
+def build_in_docker(ctx, rebuild_ebpf_builder=False, race=False, incremental_build=False):
+    """
+    Build the network_tracer using a container
+    This can be used when the current OS don't have up to date linux headers
+    """
+
+    if rebuild_ebpf_builder:
+        build_ebpf_builder(ctx)
+
+    docker_cmd = "docker run --rm \
+            -v {cwd}:/go/src/github.com/DataDog/datadog-agent \
+            --workdir=/go/src/github.com/DataDog/datadog-agent \
+            {builder} \
+            {cmd}"
+
+    if should_use_sudo(ctx):
+        docker_cmd = "sudo " + docker_cmd
+
+    cmd = "invoke -e network-tracer.build"
+
+    if race:
+        cmd += " --race"
+    if incremental_build:
+        cmd += " --incremental-build"
+
+    ctx.run(docker_cmd.format(cwd=os.getcwd(), builder=EBPF_BUILDER_IMAGE, cmd=cmd))
+
+
+@task
+def test(ctx, object_files=False):
     """
     Run tests on eBPF parts
+    If object_files is set to True, this will also rebuild the object files
     """
+
+    if object_files:
+        build_object_files(ctx)
 
     pkg = os.path.join(REPO_PATH, "pkg", "ebpf", "...")
 
@@ -76,14 +107,6 @@ def test(ctx):
 
     cmd = 'sudo -E PATH={path} go test -v -tags "{bpf_tag}" {pkg}'
     ctx.run(cmd.format(path=path, bpf_tag=BPF_TAG, pkg=pkg))
-
-
-@task
-def build_builder_image(ctx):
-    """
-    Builds the ebpf builder image
-    """
-    build_ebpf_builder(ctx)
 
 
 @task
@@ -145,6 +168,85 @@ def codegen(ctx):
     ctx.run("easyjson {}".format(path))
 
 
+@task
+def object_files(ctx):
+    build_object_files(ctx)
+
+
+def build_object_files(ctx):
+    """build_object_files builds only the eBPF object
+    """
+
+    headers_dir = "/usr/src"
+    linux_headers = [
+        os.path.join(headers_dir, d) for d in os.listdir(headers_dir)
+        if "linux-headers" in d
+    ]
+
+    bpf_dir = os.path.join(".", "pkg", "ebpf")
+    c_dir = os.path.join(bpf_dir, "c")
+
+    flags = [
+        '-D__KERNEL__',
+        '-D__ASM_SYSREG_H',
+        '-D__BPF_TRACING__',
+        '-Wno-unused-value',
+        '-Wno-pointer-sign',
+        '-Wno-compare-distinct-pointer-types',
+        '-Wunused',
+        '-Wall',
+        '-Werror',
+        '-O2',
+        '-emit-llvm',
+        '-c',
+        os.path.join(c_dir, "tracer-ebpf.c"),
+    ]
+
+    subdirs = [
+        "include",
+        "include/uapi",
+        "include/generated/uapi",
+        "arch/x86/include",
+        "arch/x86/include/uapi",
+        "arch/x86/include/generated",
+    ]
+
+    for d in linux_headers:
+        for s in subdirs:
+            flags.extend(["-I", os.path.join(d, s)])
+
+    cmd = "clang {flags} -o - | llc -march=bpf -filetype=obj -o '{file}'"
+
+    commands = []
+
+    # Build both the standard and debug version
+    obj_file = os.path.join(c_dir, "tracer-ebpf.o")
+    commands.append(cmd.format(
+        flags=" ".join(flags),
+        file=obj_file
+    ))
+
+    debug_obj_file = os.path.join(c_dir, "tracer-ebpf-debug.o")
+    commands.append(cmd.format(
+        flags=" ".join(flags + ["-DDEBUG=1"]),
+        file=debug_obj_file
+    ))
+
+    # Now update the assets stored in the go code
+    commands.append("go get -u github.com/jteeuwen/go-bindata/...")
+
+    assets_cmd = "go-bindata -pkg ebpf -prefix '{c_dir}' -modtime 1 -o '{go_file}' '{obj_file}' '{debug_obj_file}'"
+    commands.append(assets_cmd.format(
+        c_dir=c_dir,
+        go_file=os.path.join(bpf_dir, "tracer-ebpf.go"),
+        obj_file=obj_file,
+        debug_obj_file=debug_obj_file,
+    ))
+
+    for cmd in commands:
+        ctx.run(cmd)
+
+
 def build_ebpf_builder(ctx):
     """build_ebpf_builder builds the docker image for the ebpf builder
     """
@@ -155,29 +257,6 @@ def build_ebpf_builder(ctx):
         cmd = "sudo " + cmd
 
     ctx.run(cmd.format(image=EBPF_BUILDER_IMAGE, file=EBPF_BUILDER_FILE))
-
-
-def build_object_files(ctx):
-    """build_object_files_only builds only the eBPF object
-    (without rebuilding the docker image builder)
-    """
-
-    makeCmd = "make -f /ebpf/c/tracer-ebpf.mk build install"
-    args = {
-        "circle_url": "TODO",
-        "builder": EBPF_BUILDER_IMAGE,
-        "makeCmd": makeCmd
-    }
-    cmd = "docker run --rm -e CIRCLE_BUILD_URL={circle_url} \
-            -v $(pwd)/pkg/ebpf:/ebpf/ \
-            --workdir=/ebpf \
-            {builder} \
-            {makeCmd}"
-
-    if should_use_sudo(ctx):
-        cmd = "sudo " + cmd
-
-    ctx.run(cmd.format(**args))
 
 
 def should_use_sudo(ctx):

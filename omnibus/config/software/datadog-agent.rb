@@ -92,15 +92,15 @@ build do
   end
 
 
-  # Build the process-agent and the network-tracer
+  # Build the process-agent
   command "invoke process-agent.build", :env => env
-  command "invoke network-tracer.build", :env => env
 
   if windows?
     copy 'bin/process-agent/process-agent.exe', "#{Omnibus::Config.source_dir()}/datadog-agent/src/github.com/DataDog/datadog-agent/bin/agent"
   else
     copy 'bin/process-agent/process-agent', "#{install_dir}/embedded/bin"
     copy 'bin/network-tracer/network-tracer', "#{install_dir}/embedded/bin"
+    File.chmod(0755, "#{install_dir}/embedded/bin/network-tracer")
   end
 
   if linux?
