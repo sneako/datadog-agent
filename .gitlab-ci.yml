@@ -162,6 +162,20 @@ run_tests_deb-x64:
   script:
     - inv -e test --race --profile --cpus 4
 
+# run tests for eBPF code
+run_tests_ebpf:
+  stage: source_test
+  # TODO use latest once the image is available
+  image: 486234852809.dkr.ecr.us-east-1.amazonaws.com/ci/datadog-agent-builders/ebpf:v1321509-5224533
+  before_script:
+    - cd $SRC_PATH
+    - inv -e deps
+  tags: [ "runner:main", "size:large" ]
+  script:
+    - inv -e network-tracer.test --only-check-bpf-bytes
+
+#
+
 # # run tests for rpm-x64
 # run_test_rpm-x64:
 #   stage: source_test
@@ -246,27 +260,13 @@ cluster_agent-build:
 # build network-tracer bin
 network_tracer-build:
   stage: binary_build
-  # TODO change image
-  image: golang:1.11.5
-  # TODO removeme
+  # TODO use latest once the image is available
+  image: 486234852809.dkr.ecr.us-east-1.amazonaws.com/ci/datadog-agent-builders/ebpf:v1321509-5224533
   before_script:
     - cd $SRC_PATH
+    - inv -e deps
   tags: [ "runner:main", "size:large" ]
   script:
-    # TODO changeme once the builder image is avaialble in the registry remove those
-    - apt-get update
-    - apt-get install -y linux-headers-4.9.0-9-all git python3-pip python-pip
-    - pip3 install invoke==1.0 pyyaml==5.1
-    - wget -O - https://apt.llvm.org/llvm-snapshot.gpg.key | apt-key add -
-    - echo "deb http://apt.llvm.org/stretch/ llvm-toolchain-stretch-8 main" >> /etc/apt/sources.list
-    - echo "deb-src http://apt.llvm.org/stretch/ llvm-toolchain-stretch-8 main" >> /etc/apt/sources.list
-    - apt-get update
-    - apt-get install -y clang-8 llvm-8
-    - ln -sf /usr/bin/clang-8 /usr/bin/clang
-    - ln -sf /usr/bin/llc-8 /usr/bin/llc
-    - inv -e deps
-    - pip install awscli==1.11.152
-    # END
     - inv -e network-tracer.build
     - $S3_CP_CMD $SRC_PATH/$NETWORK_TRACER_BINARIES_DIR/network-tracer $S3_ARTEFACTS_URI/network-tracer
 
@@ -387,6 +387,8 @@ agent_rpm-x64:
     - printf -- "$RPM_GPG_KEY" | gpg --import --batch
     - export RPM_SIGNING_PASSPHRASE=$(aws ssm get-parameter --region us-east-1 --name ci.datadog-agent.rpm_signing_key_passphrase --with-decryption --query "Parameter.Value" --out text)
     - set -x
+    # Retrieve the network-tracer from S3
+    - $S3_CP_CMD $S3_ARTEFACTS_URI/network-tracer $SRC_PATH/$NETWORK_TRACER_BINARIES_DIR/network-tracer
     - inv -e agent.omnibus-build --release-version "$RELEASE_VERSION" --base-dir $OMNIBUS_BASE_DIR --omnibus-s3-cache
     - rpm -i $OMNIBUS_BASE_DIR/pkg/*.rpm
     - mkdir -p $OMNIBUS_PACKAGE_DIR && cp $OMNIBUS_BASE_DIR/pkg/*.{rpm,metadata.json} $OMNIBUS_PACKAGE_DIR

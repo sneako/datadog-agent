@@ -26,7 +26,7 @@ def build(ctx, race=False, incremental_build=False):
     Build the network_tracer
     """
 
-    build_object_files(ctx)
+    build_object_files(ctx, install=True)
 
     # TODO use pkg/version for this
     main = "main."
@@ -91,21 +91,29 @@ def build_in_docker(ctx, rebuild_ebpf_builder=False, race=False, incremental_bui
 
 
 @task
-def test(ctx, object_files=False):
+def test(ctx, skip_object_files=False, only_check_bpf_bytes=False):
     """
     Run tests on eBPF parts
-    If object_files is set to True, this will also rebuild the object files
+    If skip_object_files is set to True, this won't rebuild object files
+    If only_check_bpf_bytes is set to True this will only check that the assets bundled are
+    matching the currently generated object files
     """
 
-    if object_files:
-        build_object_files(ctx)
+    if not skip_object_files:
+        build_object_files(ctx, install=False)
 
     pkg = os.path.join(REPO_PATH, "pkg", "ebpf", "...")
 
     # Pass along the PATH env variable to retrieve the go binary path
     path = os.environ['PATH']
 
-    cmd = 'sudo -E PATH={path} go test -v -tags "{bpf_tag}" {pkg}'
+    cmd = 'go test -v -tags "{bpf_tag}" {pkg}'
+    if not is_root():
+        cmd = 'sudo -E PATH={path} ' + cmd
+
+    if only_check_bpf_bytes:
+        cmd += " -run=TestEbpfBytesCorrect"
+
     ctx.run(cmd.format(path=path, bpf_tag=BPF_TAG, pkg=pkg))
 
 
@@ -114,14 +122,18 @@ def nettop(ctx):
     """
     Build and run the `nettop` utility for testing
     """
-    build_object_files(ctx)
+    build_object_files(ctx, install=True)
 
     cmd = 'go build -a -tags "linux_bpf" -o {bin_path} {path}'
     bin_path = os.path.join(BIN_DIR, "nettop")
     # Build
     ctx.run(cmd.format(path=os.path.join(REPO_PATH, "pkg", "ebpf", "nettop"), bin_path=bin_path))
     # Run
-    ctx.run("sudo {}".format(bin_path))
+
+    if should_use_sudo(ctx):
+        ctx.sudo(bin_path)
+    else:
+        ctx.run(bin_path)
 
 
 @task
@@ -169,12 +181,14 @@ def codegen(ctx):
 
 
 @task
-def object_files(ctx):
-    build_object_files(ctx)
+def object_files(ctx, install=True):
+    """object_files builds the eBPF object files"""
+    build_object_files(ctx, install=install)
 
 
-def build_object_files(ctx):
+def build_object_files(ctx, install=True):
     """build_object_files builds only the eBPF object
+    set install to False to disable replacing the assets
     """
 
     headers_dir = "/usr/src"
@@ -232,16 +246,17 @@ def build_object_files(ctx):
         file=debug_obj_file
     ))
 
-    # Now update the assets stored in the go code
-    commands.append("go get -u github.com/jteeuwen/go-bindata/...")
+    if install:
+        # Now update the assets stored in the go code
+        commands.append("go get -u github.com/jteeuwen/go-bindata/...")
 
-    assets_cmd = "go-bindata -pkg ebpf -prefix '{c_dir}' -modtime 1 -o '{go_file}' '{obj_file}' '{debug_obj_file}'"
-    commands.append(assets_cmd.format(
-        c_dir=c_dir,
-        go_file=os.path.join(bpf_dir, "tracer-ebpf.go"),
-        obj_file=obj_file,
-        debug_obj_file=debug_obj_file,
-    ))
+        assets_cmd = "go-bindata -pkg ebpf -prefix '{c_dir}' -modtime 1 -o '{go_file}' '{obj_file}' '{debug_obj_file}'"
+        commands.append(assets_cmd.format(
+            c_dir=c_dir,
+            go_file=os.path.join(bpf_dir, "tracer-ebpf.go"),
+            obj_file=obj_file,
+            debug_obj_file=debug_obj_file,
+        ))
 
     for cmd in commands:
         ctx.run(cmd)
@@ -258,8 +273,14 @@ def build_ebpf_builder(ctx):
 
     ctx.run(cmd.format(image=EBPF_BUILDER_IMAGE, file=EBPF_BUILDER_FILE))
 
+def is_root():
+    return os.getuid() == 0
 
 def should_use_sudo(ctx):
+    # We are already root
+    if is_root():
+        return False
+
     with open(os.devnull, 'w') as FNULL:
         try:
             check_output(['docker', 'info'], stderr=FNULL)

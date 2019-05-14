@@ -100,7 +100,7 @@ build do
   else
     copy 'bin/process-agent/process-agent', "#{install_dir}/embedded/bin"
     copy 'bin/network-tracer/network-tracer', "#{install_dir}/embedded/bin"
-    File.chmod(0755, "#{install_dir}/embedded/bin/network-tracer")
+    block { File.chmod(0755, "#{install_dir}/embedded/bin/network-tracer") }
   end
 
   if linux?
